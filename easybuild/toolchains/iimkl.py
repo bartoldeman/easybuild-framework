@@ -1,4 +1,4 @@
-# #
+##
 # Copyright 2012-2017 Ghent University
 #
 # This file is part of EasyBuild,
@@ -21,33 +21,25 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with EasyBuild.  If not, see <http://www.gnu.org/licenses/>.
-# #
+##
 """
-Support for QLogicMPI as toolchain MPI library.
+EasyBuild support for iimkl compiler toolchain (includes Intel compilers (icc, ifort),
+Intel Math Kernel Library (MKL), and Intel FFTW wrappers.
 
 :author: Stijn De Weirdt (Ghent University)
 :author: Kenneth Hoste (Ghent University)
+:author: Bart Oldeman (McGill University, Calcul Quebec, Compute Canada)
 """
 
-from easybuild.toolchains.mpi.mpich2 import Mpich2
-from easybuild.tools.toolchain.variables import CommandFlagList
+from easybuild.toolchains.iccifort import IccIfort
+from easybuild.toolchains.fft.intelfftw import IntelFFTW
+from easybuild.toolchains.linalg.intelmkl import IntelMKL
 
 
-TC_CONSTANT_QLOGICMPI = "QLogicMPI"
-
-
-class QLogicMPI(Mpich2):
-    """QLogicMPI MPI class"""
-    MPI_MODULE_NAME = ["QLogicMPI"]
-    MPI_FAMILY = TC_CONSTANT_QLOGICMPI
-
-    MPI_LIBRARY_NAME = 'mpich'
-
-    # qlogic has separate -m32 / -m64 option to mpicc/.. --> only one
-
-    def _set_mpi_compiler_variables(self):
-        """Add MPICH_CCC variable to set."""
-
-        self.variables.nappend("MPICH_CCC", str(self.variables['CXX'].get_first()), var_class=CommandFlagList)
-
-        super(QLogicMPI, self)._set_mpi_compiler_variables()
+class Iimkl(IccIfort, IntelMKL, IntelFFTW):
+    """
+    Compiler toolchain with Intel compilers (icc/ifort),
+    Intel Math Kernel Library (MKL) and Intel FFTW wrappers.
+    """
+    NAME = 'iimkl'
+    SUBTOOLCHAIN = IccIfort.NAME
