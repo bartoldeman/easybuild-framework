@@ -48,6 +48,7 @@ import stat
 import tempfile
 import time
 import traceback
+import json
 from datetime import datetime
 from distutils.version import LooseVersion
 
@@ -151,6 +152,7 @@ class EasyBlock(object):
         self.patches = []
         self.src = []
         self.checksums = []
+        self.json_checksums = None
 
         # build/install directories
         self.builddir = None
@@ -328,15 +330,16 @@ class EasyBlock(object):
         Obtain checksum for given filename.
 
         :param checksums: a list or tuple of checksums (or None)
-        :param filename: name of the file to obtain checksum for (Deprecated)
+        :param filename: name of the file to obtain checksum for
         :param index: index of file in list
         """
-        # Filename has never been used; flag it as deprecated
-        if filename:
-            self.log.deprecated("Filename argument to get_checksum_for() is deprecated", '5.0')
-
         # if checksums are provided as a dict, lookup by source filename as key
-        if isinstance(checksums, (list, tuple)):
+        if isinstance(checksums, dict):
+            if filename is not None and filename in checksums:
+                return checksums[filename]
+            else:
+                return None
+        elif isinstance(checksums, (list, tuple)):
             if index is not None and index < len(checksums) and (index >= 0 or abs(index) <= len(checksums)):
                 return checksums[index]
             else:
@@ -344,7 +347,21 @@ class EasyBlock(object):
         elif checksums is None:
             return None
         else:
-            raise EasyBuildError("Invalid type for checksums (%s), should be list, tuple or None.", type(checksums))
+            raise EasyBuildError("Invalid type for checksums (%s), should be dict, list, tuple or None.",
+                                 type(checksums))
+
+    def get_checksums_from_json(self, always_read=False):
+        if always_read or self.json_checksums is None:
+            try:
+                path = self.obtain_file("checksums.json")
+                self.log.info("Loading checksums from file %s", path)
+                json_txt = read_file(path)
+                self.json_checksums = json.loads(json_txt)
+            # if the file can't be found, return an empty dict
+            except EasyBuildError:
+                self.json_checksums = {}
+
+        return self.json_checksums
 
     def fetch_source(self, source, checksum=None, extension=False):
         """
@@ -410,7 +427,7 @@ class EasyBlock(object):
         if sources is None:
             sources = self.cfg['sources']
         if checksums is None:
-            checksums = self.cfg['checksums']
+            checksums = self.cfg['checksums'] or self.get_checksums_from_json()
 
         # Single source should be re-wrapped as a list, and checksums with it
         if isinstance(sources, dict):
@@ -423,7 +440,8 @@ class EasyBlock(object):
             if source is None:
                 raise EasyBuildError("Empty source in sources list at index %d", index)
 
-            src_spec = self.fetch_source(source, self.get_checksum_for(checksums=checksums, index=index))
+            src_spec = self.fetch_source(source,
+                                         self.get_checksum_for(checksums=checksums, filename=source, index=index))
             if src_spec:
                 self.src.append(src_spec)
             else:
@@ -474,7 +492,7 @@ class EasyBlock(object):
                 patchspec = {
                     'name': patch_file,
                     'path': path,
-                    'checksum': self.get_checksum_for(checksums, index=index),
+                    'checksum': self.get_checksum_for(checksums, filename=patch_file, index=index),
                 }
                 if suff:
                     if copy_file:
@@ -547,7 +565,7 @@ class EasyBlock(object):
                     ext_options = resolve_template(ext_options, template_values)
 
                     source_urls = ext_options.get('source_urls', [])
-                    checksums = ext_options.get('checksums', [])
+                    checksums = ext_options.get('checksums', self.get_checksums_from_json())
 
                     if ext_options.get('nosource', None):
                         self.log.debug("No sources for extension %s, as indicated by 'nosource'", ext_name)
@@ -609,7 +627,7 @@ class EasyBlock(object):
 
                         # verify checksum (if provided)
                         self.log.debug('Verifying checksums for extension source...')
-                        fn_checksum = self.get_checksum_for(checksums, index=0)
+                        fn_checksum = self.get_checksum_for(checksums, filename=src_fn, index=0)
                         if verify_checksum(src_path, fn_checksum):
                             self.log.info('Checksum for extension source %s verified', src_fn)
                         elif build_option('ignore_checksums'):
@@ -638,7 +656,7 @@ class EasyBlock(object):
                                 patch = patch['path']
                                 patch_fn = os.path.basename(patch)
 
-                                checksum = self.get_checksum_for(checksums[1:], index=idx)
+                                checksum = self.get_checksum_for(checksums, filename=patch_fn, index=idx+1)
                                 if verify_checksum(patch, checksum):
                                     self.log.info('Checksum for extension patch %s verified', patch_fn)
                                 elif build_option('ignore_checksums'):
@@ -1901,7 +1919,7 @@ class EasyBlock(object):
 
         # fetch sources
         if self.cfg['sources']:
-            self.fetch_sources(self.cfg['sources'], checksums=self.cfg['checksums'])
+            self.fetch_sources(self.cfg['sources'], checksums=self.cfg['checksums'] or self.get_checksums_from_json())
         else:
             self.log.info('no sources provided')
 
@@ -1911,11 +1929,11 @@ class EasyBlock(object):
 
         # fetch patches
         if self.cfg['patches']:
-            if isinstance(self.cfg['checksums'], (list, tuple)):
+            if self.cfg['checksums'] and isinstance(self.cfg['checksums'], (list, tuple)):
                 # if checksums are provided as a list, first entries are assumed to be for sources
                 patches_checksums = self.cfg['checksums'][len(self.cfg['sources']):]
             else:
-                patches_checksums = self.cfg['checksums']
+                patches_checksums = self.get_checksums_from_json()
             self.fetch_patches(checksums=patches_checksums)
         else:
             self.log.info('no patches provided')
@@ -1995,6 +2013,17 @@ class EasyBlock(object):
         sources = ent.get('sources', [])
         patches = ent.get('patches', [])
         checksums = ent.get('checksums', [])
+
+        if not checksums:
+            checksums_from_json = self.get_checksums_from_json()
+            # recreate a list of checksums. If each filename is found, the generated list of checksums should match
+            # what is expected in list format
+            for fn in sources + patches:
+                # if the filename is a tuple, the actual source file name is the first element
+                if isinstance(fn, tuple):
+                    fn = fn[0]
+                if fn in checksums_from_json.keys():
+                    checksums += [checksums_from_json[fn]]
 
         if source_cnt is None:
             source_cnt = len(sources)
@@ -3952,6 +3981,67 @@ class StopException(Exception):
     StopException class definition.
     """
     pass
+
+
+def inject_checksums_to_json(ecs, checksum_type):
+    """
+    Inject checksums of given type in corresponding json files
+
+    :param ecs: list of EasyConfig instances to calculate checksums and inject them into checksums.json
+    :param checksum_type: type of checksum to use
+    """
+    for ec in ecs:
+        ec_fn = os.path.basename(ec['spec'])
+        ec_dir = os.path.dirname(ec['spec'])
+        print_msg("injecting %s checksums for %s in checksums.json" % (checksum_type, ec['spec']), log=_log)
+
+        # get easyblock instance and make sure all sources/patches are available by running fetch_step
+        print_msg("fetching sources & patches for %s..." % ec_fn, log=_log)
+        app = get_easyblock_instance(ec)
+        app.update_config_template_run_step()
+        app.fetch_step(skip_checksums=True)
+
+        # compute & inject checksums for sources/patches
+        print_msg("computing %s checksums for sources & patches for %s..." % (checksum_type, ec_fn), log=_log)
+        checksums = {}
+        for entry in app.src + app.patches:
+            checksum = compute_checksum(entry['path'], checksum_type)
+            print_msg("* %s: %s" % (os.path.basename(entry['path']), checksum), log=_log)
+            checksums[os.path.basename(entry['path'])] = checksum
+
+        # compute & inject checksums for extension sources/patches
+        if app.exts:
+            print_msg("computing %s checksums for extensions for %s..." % (checksum_type, ec_fn), log=_log)
+
+            for ext in app.exts:
+                # compute checksums for extension sources & patches
+                if 'src' in ext:
+                    src_fn = os.path.basename(ext['src'])
+                    checksum = compute_checksum(ext['src'], checksum_type)
+                    print_msg(" * %s: %s" % (src_fn, checksum), log=_log)
+                    checksums[src_fn] = checksum
+                for ext_patch in ext.get('patches', []):
+                    patch_fn = os.path.basename(ext_patch['path'])
+                    checksum = compute_checksum(ext_patch['path'], checksum_type)
+                    print_msg(" * %s: %s" % (patch_fn, checksum), log=_log)
+                    checksums[patch_fn] = checksum
+
+        # actually inject new checksums or overwrite existing ones (if --force)
+        existing_checksums = app.get_checksums_from_json(always_read=True)
+        for filename in checksums:
+            if filename not in existing_checksums:
+                existing_checksums[filename] = checksums[filename]
+            # don't do anything if the checksum already exist and is the same
+            elif checksums[filename] != existing_checksums[filename]:
+                if build_option('force'):
+                    print_warning("Found existing checksums for %s, overwriting them (due to --force)..." % ec_fn)
+                    existing_checksums[filename] = checksums[filename]
+                else:
+                    raise EasyBuildError("Found existing checksum for %s, use --force to overwrite them" % filename)
+
+        # actually write the checksums
+        with open(os.path.join(ec_dir, 'checksums.json'), 'w') as outfile:
+            json.dump(existing_checksums, outfile, indent=2, sort_keys=True)
 
 
 def inject_checksums(ecs, checksum_type):
