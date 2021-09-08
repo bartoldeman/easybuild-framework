@@ -106,21 +106,26 @@ class ToyBuildTest(EnhancedTestCase):
         if os.path.exists(self.dummylogfn):
             os.remove(self.dummylogfn)
 
-    def check_toy(self, installpath, outtxt, version='0.0', versionprefix='', versionsuffix=''):
+    def check_toy(self, installpath, outtxt, version='0.0', versionprefix='', versionsuffix='', error=None):
         """Check whether toy build succeeded."""
 
         full_version = ''.join([versionprefix, version, versionsuffix])
 
+        if error is not None:
+            error_msg = '\nNote: Caught error: %s' % error
+        else:
+            error_msg = ''
+
         # check for success
-        success = re.compile(r"COMPLETED: Installation ended successfully \(took .* secs?\)")
-        self.assertTrue(success.search(outtxt), "COMPLETED message found in '%s" % outtxt)
+        success = re.compile(r"COMPLETED: Installation (ended|STOPPED) successfully \(took .* secs?\)")
+        self.assertTrue(success.search(outtxt), "COMPLETED message found in '%s'%s" % (outtxt, error_msg))
 
         # if the module exists, it should be fine
         toy_module = os.path.join(installpath, 'modules', 'all', 'toy', full_version)
         msg = "module for toy build toy/%s found (path %s)" % (full_version, toy_module)
         if get_module_syntax() == 'Lua':
             toy_module += '.lua'
-        self.assertTrue(os.path.exists(toy_module), msg)
+        self.assertTrue(os.path.exists(toy_module), msg + error_msg)
 
         # module file is symlinked according to moduleclass
         toy_module_symlink = os.path.join(installpath, 'modules', 'tools', 'toy', full_version)
@@ -183,7 +188,7 @@ class ToyBuildTest(EnhancedTestCase):
                 raise myerr
 
         if verify:
-            self.check_toy(self.test_installpath, outtxt, versionsuffix=versionsuffix)
+            self.check_toy(self.test_installpath, outtxt, versionsuffix=versionsuffix, error=myerr)
 
         if test_readme:
             # make sure postinstallcmds were used
@@ -615,7 +620,16 @@ class ToyBuildTest(EnhancedTestCase):
         # 2. Existing build with --rebuild -> Reinstall and set read-only
         # 3. Existing build with --force -> Reinstall and set read-only
         # 4-5: Same as 2-3 but with --skip
-        for extra_args in ([], ['--rebuild'], ['--force'], ['--skip', '--rebuild'], ['--skip', '--force']):
+        # 6. Existing build with --fetch -> Test that logs can be written
+        test_cases = (
+            [],
+            ['--rebuild'],
+            ['--force'],
+            ['--skip', '--rebuild'],
+            ['--skip', '--force'],
+            ['--rebuild', '--fetch'],
+        )
+        for extra_args in test_cases:
             self.mock_stdout(True)
             self.test_toy_build(ec_file=test_ec, extra_args=['--read-only-installdir'] + extra_args, force=False)
             self.mock_stdout(False)
@@ -3061,7 +3075,6 @@ class ToyBuildTest(EnhancedTestCase):
                     self.assertTrue(regexes_S[ext].match(bin_txt),
                                     "Pattern '%s' found in %s: %s" % (regexes_S[ext].pattern, bin_path, bin_txt))
 
-
     def test_toy_system_toolchain_alias(self):
         """Test use of 'system' toolchain alias."""
         toy_ec = os.path.join(os.path.dirname(__file__), 'easyconfigs', 'test_ecs', 't', 'toy', 'toy-0.0.eb')
@@ -3498,6 +3511,14 @@ class ToyBuildTest(EnhancedTestCase):
         ]
         self.test_toy_build(ec_file=test_ec, extra_args=args, force=False,
                             raise_error=True, verbose=False, verify=False)
+
+    def test_toy_ignore_test_failure(self):
+        """Check whether use of --ignore-test-failure is mentioned in build output."""
+        args = ['--ignore-test-failure']
+        stdout, stderr = self.run_test_toy_build_with_output(extra_args=args, verify=False, testing=False)
+
+        self.assertTrue("Build succeeded (with --ignore-test-failure) for 1 out of 1" in stdout)
+        self.assertFalse(stderr)
 
 
 def suite():
