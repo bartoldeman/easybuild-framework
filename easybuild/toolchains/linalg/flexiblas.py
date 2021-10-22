@@ -73,6 +73,12 @@ class FlexiBLAS(LinAlg):
     LAPACK_IS_BLAS = True
     LAPACK_FAMILY = TC_CONSTANT_FLEXIBLAS
 
+    def _set_blas_variables(self):
+        """Fix the BLAS_LIB for Intel"""
+        if self.COMPILER_FAMILY == TC_CONSTANT_INTELCOMP:
+            self.BLAS_LIB = ['flexiblas_intel']
+        super(FlexiBLAS, self)._set_blas_variables()
+
     def banned_linked_shared_libs(self):
         """
         List of shared libraries (names, file names, paths) which are
