@@ -90,7 +90,7 @@ class LinAlg(Toolchain):
         # TODO is link order fully preserved with this order ?
         self._set_blas_variables()
         self._set_lapack_variables()
-        if getattr(self, 'MPI_MODULE_NAME', None):
+        if getattr(self, 'MPI_MODULE_NAME', None) and self.SCALAPACK_LIB is not None:
             self._set_blacs_variables()
             self._set_scalapack_variables()
 
@@ -216,8 +216,7 @@ class LinAlg(Toolchain):
             lib_map.update(self.BLACS_LIB_MAP)
 
         # BLACS
-        if self.BLACS_LIB is not None:
-            self.BLACS_LIB = self.variables.nappend('LIBBLACS', [x % lib_map for x in self.BLACS_LIB])
+        self.BLACS_LIB = self.variables.nappend('LIBBLACS', [x % lib_map for x in self.BLACS_LIB])
         if self.BLACS_LIB is not None:
             self.variables.add_begin_end_linkerflags(self.BLACS_LIB,
                                                      toggle_startstopgroup=self.BLACS_LIB_GROUP,
