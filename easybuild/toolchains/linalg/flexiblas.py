@@ -33,6 +33,7 @@ from easybuild.tools.toolchain.linalg import LinAlg
 
 from easybuild.tools.run import run_cmd
 from easybuild.tools.systemtools import get_shared_lib_ext
+from easybuild.toolchains.compiler.inteliccifort import TC_CONSTANT_INTELCOMP
 
 
 TC_CONSTANT_FLEXIBLAS = 'FlexiBLAS'
