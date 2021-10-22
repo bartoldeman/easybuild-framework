@@ -216,7 +216,8 @@ class LinAlg(Toolchain):
             lib_map.update(self.BLACS_LIB_MAP)
 
         # BLACS
-        self.BLACS_LIB = self.variables.nappend('LIBBLACS', [x % lib_map for x in self.BLACS_LIB])
+        if self.BLACS_LIB is not None:
+            self.BLACS_LIB = self.variables.nappend('LIBBLACS', [x % lib_map for x in self.BLACS_LIB])
         if self.BLACS_LIB is not None:
             self.variables.add_begin_end_linkerflags(self.BLACS_LIB,
                                                      toggle_startstopgroup=self.BLACS_LIB_GROUP,
