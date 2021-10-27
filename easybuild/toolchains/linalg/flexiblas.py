@@ -27,6 +27,7 @@ Support for FlexiBLAS as toolchain linear algebra library.
 
 :author: Kenneth Hoste (Ghent University)
 """
+import os
 import re
 
 from easybuild.tools.toolchain.linalg import LinAlg
@@ -68,10 +69,12 @@ class FlexiBLAS(LinAlg):
     """
     BLAS_MODULE_NAME = ['FlexiBLAS']
     BLAS_LIB = ['flexiblas']
+    BLAS_INCLUDE_DIR = [os.path.join('include', 'flexiblas')]
     BLAS_FAMILY = TC_CONSTANT_FLEXIBLAS
 
     LAPACK_MODULE_NAME = ['FlexiBLAS']
     LAPACK_IS_BLAS = True
+    LAPACK_INCLUDE_DIR = [os.path.join('include', 'flexiblas')]
     LAPACK_FAMILY = TC_CONSTANT_FLEXIBLAS
 
     def _set_blas_variables(self):
