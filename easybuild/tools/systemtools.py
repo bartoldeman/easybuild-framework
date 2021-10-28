@@ -824,7 +824,11 @@ def check_linked_shared_libs(path, required_patterns=None, banned_patterns=None)
         # example output for shared libraries:
         #   /lib64/libc-2.17.so: ELF 64-bit LSB shared object, x86-64, ..., dynamically linked (uses shared libs), ...
         if "dynamically linked" in file_cmd_out:
-            linked_libs_out, _ = run_cmd("ldd %s" % path, simple=False, trace=False)
+            cmd = "ldd %s" % path
+            linked_libs_out, ec = run_cmd(cmd, simple=False, trace=False, log_ok=False)
+            if not ec:
+                _log.warning('cmd "%s" exited with exit code %s and output:\n%s' % (cmd, ec, linked_libs_out))
+                return None
         else:
             return None
 
