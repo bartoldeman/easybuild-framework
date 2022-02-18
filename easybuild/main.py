@@ -534,7 +534,8 @@ def main(args=None, logfile=None, do_build=None, testing=False, modtool=None):
         dump_env_script(easyconfigs)
 
     elif options.inject_checksums:
-        inject_checksums(ordered_ecs, options.inject_checksums)
+        with rich_live_cm():
+            inject_checksums(ordered_ecs, options.inject_checksums)
 
     elif options.inject_checksums_to_json:
         inject_checksums_to_json(ordered_ecs, options.inject_checksums_to_json)
