@@ -1262,6 +1262,9 @@ class EasyBlock(object):
         if tc_mod in excluded_deps and tc_dep_mods:
             excluded_deps.extend(tc_dep_mods)
 
+        # Compute Canada specific: exclude gcccore from toolchain deps, we treat it as build dependency
+        excluded_deps.extend([d for d in tc_dep_mods if d.startswith('gcccore/')])
+
         self.log.debug("List of excluded deps: %s", excluded_deps)
 
         # expand toolchain into toolchain components if desired
