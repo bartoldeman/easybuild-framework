@@ -1,5 +1,5 @@
 # #
-# Copyright 2009-2022 Ghent University
+# Copyright 2009-2023 Ghent University
 #
 # This file is part of EasyBuild,
 # originally created by the HPC team of Ghent University (http://ugent.be/hpc/en),
@@ -26,31 +26,33 @@
 Generic EasyBuild support for building and installing software.
 The EasyBlock class should serve as a base class for all easyblocks.
 
-:author: Stijn De Weirdt (Ghent University)
-:author: Dries Verdegem (Ghent University)
-:author: Kenneth Hoste (Ghent University)
-:author: Pieter De Baets (Ghent University)
-:author: Jens Timmerman (Ghent University)
-:author: Toon Willems (Ghent University)
-:author: Ward Poelmans (Ghent University)
-:author: Fotis Georgatos (Uni.Lu, NTUA)
-:author: Damian Alvarez (Forschungszentrum Juelich GmbH)
-:author: Maxime Boissonneault (Compute Canada)
-:author: Davide Vanzo (Vanderbilt University)
+Authors:
+
+* Stijn De Weirdt (Ghent University)
+* Dries Verdegem (Ghent University)
+* Kenneth Hoste (Ghent University)
+* Pieter De Baets (Ghent University)
+* Jens Timmerman (Ghent University)
+* Toon Willems (Ghent University)
+* Ward Poelmans (Ghent University)
+* Fotis Georgatos (Uni.Lu, NTUA)
+* Damian Alvarez (Forschungszentrum Juelich GmbH)
+* Maxime Boissonneault (Compute Canada)
+* Davide Vanzo (Vanderbilt University)
+* Caspar van Leeuwen (SURF)
 """
 
 import copy
 import glob
 import inspect
+import json
 import os
 import re
 import stat
 import tempfile
 import time
 import traceback
-import json
 from datetime import datetime
-from distutils.version import LooseVersion
 
 import easybuild.tools.environment as env
 import easybuild.tools.toolchain as toolchain
@@ -64,12 +66,11 @@ from easybuild.framework.easyconfig.style import MAX_LINE_LENGTH
 from easybuild.framework.easyconfig.tools import dump_env_easyblock, get_paths_for
 from easybuild.framework.easyconfig.templates import TEMPLATE_NAMES_EASYBLOCK_RUN_STEP, template_constant_dict
 from easybuild.framework.extension import Extension, resolve_exts_filter_template
-from easybuild.tools import config, run
+from easybuild.tools import LooseVersion, config, run
 from easybuild.tools.build_details import get_build_stats
 from easybuild.tools.build_log import EasyBuildError, dry_run_msg, dry_run_warning, dry_run_set_dirs
 from easybuild.tools.build_log import print_error, print_msg, print_warning
-from easybuild.tools.config import CHECKSUM_PRIORITY_JSON
-from easybuild.tools.config import DEFAULT_ENVVAR_USERS_MODULES
+from easybuild.tools.config import CHECKSUM_PRIORITY_JSON, DEFAULT_ENVVAR_USERS_MODULES
 from easybuild.tools.config import FORCE_DOWNLOAD_ALL, FORCE_DOWNLOAD_PATCHES, FORCE_DOWNLOAD_SOURCES
 from easybuild.tools.config import build_option, build_path, get_log_filename, get_repository, get_repositorypath
 from easybuild.tools.config import install_path, log_path, package_path, source_paths
@@ -234,6 +235,11 @@ class EasyBlock(object):
         # sanity check fail error messages to report (if any)
         self.sanity_check_fail_msgs = []
 
+        # keep track of whether module is loaded during sanity check step (to avoid re-loading)
+        self.sanity_check_module_loaded = False
+        # info required to roll back loading of fake module during sanity check (see _sanity_check_step method)
+        self.fake_mod_data = None
+
         # robot path
         self.robot_path = build_option('robot_path')
 
@@ -354,11 +360,10 @@ class EasyBlock(object):
         :param index: index of file in list
         """
         checksum = None
-        json_checksums = self.get_checksums_from_json()
+
         # sometimes, filename are specified as a dict
         if isinstance(filename, dict):
             filename = filename['filename']
-        json_checksum = json_checksums.get(filename, None)
 
         # if checksums are provided as a dict, lookup by source filename as key
         if isinstance(checksums, dict):
@@ -378,11 +383,17 @@ class EasyBlock(object):
                                  type(checksums))
 
         if checksum is None or build_option("checksum_priority") == CHECKSUM_PRIORITY_JSON:
-            return json_checksum
+            json_checksums = self.get_checksums_from_json()
+            return json_checksums.get(filename, None)
         else:
             return checksum
 
     def get_checksums_from_json(self, always_read=False):
+        """
+        Get checksums for this software that are provided in a checksums.json file
+
+        :param always_read: always read the checksums.json file, even if it has been read before
+        """
         if always_read or self.json_checksums is None:
             try:
                 path = self.obtain_file("checksums.json", no_download=True)
@@ -475,8 +486,8 @@ class EasyBlock(object):
             if source is None:
                 raise EasyBuildError("Empty source in sources list at index %d", index)
 
-            src_spec = self.fetch_source(source,
-                                         self.get_checksum_for(checksums=checksums, filename=source, index=index))
+            checksum = self.get_checksum_for(checksums=checksums, filename=source, index=index)
+            src_spec = self.fetch_source(source, checksum=checksum)
             if src_spec:
                 self.src.append(src_spec)
             else:
@@ -855,7 +866,7 @@ class EasyBlock(object):
                     self.dry_run_msg("  * %s (MISSING)", filename)
                     return filename
                 else:
-                    raise EasyBuildError("Couldn't find file %s anywhere, and downloading it is disable... "
+                    raise EasyBuildError("Couldn't find file %s anywhere, and downloading it is disabled... "
                                          "Paths attempted (in order): %s ", filename, ', '.join(failedpaths))
             elif git_config:
                 return get_source_tarball_from_git(filename, targetdir, git_config)
@@ -1660,6 +1671,8 @@ class EasyBlock(object):
         :param purge: boolean indicating whether or not to purge currently loaded modules first
         :param extra_modules: list of extra modules to load (these are loaded *before* loading the 'self' module)
         """
+        self.log.info("Loading fake module (%s)", self.short_mod_name)
+
         # take a copy of the current environment before loading the fake module, so we can restore it
         env = copy.deepcopy(os.environ)
 
@@ -2417,6 +2430,9 @@ class EasyBlock(object):
                 # if the filename is a tuple, the actual source file name is the first element
                 if isinstance(fn, tuple):
                     fn = fn[0]
+                # if the filename is a dict, the actual source file name is the "filename" element
+                if isinstance(fn, dict):
+                    fn = fn["filename"]
                 if fn in checksums_from_json.keys():
                     checksums += [checksums_from_json[fn]]
 
@@ -2941,6 +2957,14 @@ class EasyBlock(object):
             # To allow postinstallpatches for Bundle, and derived, easyblocks we directly call EasyBlock.patch_step
             EasyBlock.patch_step(self, beginpath=self.installdir, patches=patches)
 
+    def print_post_install_messages(self):
+        """
+        Print post-install messages that are specified via the 'postinstallmsgs' easyconfig parameter.
+        """
+        msgs = self.cfg['postinstallmsgs'] or []
+        for msg in msgs:
+            print_msg(msg, log=self.log)
+
     def post_install_step(self):
         """
         Do some postprocessing
@@ -2949,6 +2973,7 @@ class EasyBlock(object):
 
         self.run_post_install_commands()
         self.apply_post_install_patches()
+        self.print_post_install_messages()
 
         self.fix_shebang()
 
@@ -3037,8 +3062,15 @@ class EasyBlock(object):
         self.log.debug("$LD_LIBRARY_PATH during RPATH sanity check: %s", os.getenv('LD_LIBRARY_PATH', '(empty)'))
         self.log.debug("List of loaded modules: %s", self.modules_tool.list())
 
-        not_found_regex = re.compile('not found', re.M)
+        not_found_regex = re.compile(r'(\S+)\s*\=\>\s*not found')
         readelf_rpath_regex = re.compile('(RPATH)', re.M)
+
+        # List of libraries that should be exempt from the RPATH sanity check;
+        # For example, libcuda.so.1 should never be RPATH-ed by design,
+        # see https://github.com/easybuilders/easybuild-framework/issues/4095
+        filter_rpath_sanity_libs = build_option('filter_rpath_sanity_libs')
+        msg = "Ignoring the following libraries if they are not found by RPATH sanity check: %s"
+        self.log.info(msg, filter_rpath_sanity_libs)
 
         if rpath_dirs is None:
             rpath_dirs = self.cfg['bin_lib_subdirs'] or self.bin_lib_subdirs()
@@ -3066,10 +3098,18 @@ class EasyBlock(object):
                         self.log.debug(msg, path)
                     else:
                         # check whether all required libraries are found via 'ldd'
-                        if not_found_regex.search(out):
-                            fail_msg = "One or more required libraries not found for %s: %s" % (path, out)
-                            self.log.warning(fail_msg)
-                            fails.append(fail_msg)
+                        matches = re.findall(not_found_regex, out)
+                        if len(matches) > 0:  # Some libraries are not found via 'ldd'
+                            # For each match, check if the library is in the exception list
+                            for match in matches:
+                                if match in filter_rpath_sanity_libs:
+                                    msg = "Library %s not found for %s, but ignored "
+                                    msg += "since it is on the rpath exception list: %s"
+                                    self.log.info(msg, match, path, filter_rpath_sanity_libs)
+                                else:
+                                    fail_msg = "Library %s not found for %s" % (match, path)
+                                    self.log.warning(fail_msg)
+                                    fails.append(fail_msg)
                         else:
                             self.log.debug("Output of 'ldd %s' checked, looks OK", path)
 
@@ -3122,13 +3162,15 @@ class EasyBlock(object):
         self.log.info("Checking for banned/required linked shared libraries...")
 
         # list of libraries that can *not* be linked in any installed binary/library
-        banned_libs = build_option('banned_linked_shared_libs') or []
+        banned_libs = []
+        banned_libs.extend(build_option('banned_linked_shared_libs') or [])
         banned_libs.extend(self.toolchain.banned_linked_shared_libs())
         banned_libs.extend(self.banned_linked_shared_libs())
         banned_libs.extend(self.cfg['banned_linked_shared_libs'])
 
         # list of libraries that *must* be linked in every installed binary/library
-        required_libs = build_option('required_linked_shared_libs') or []
+        required_libs = []
+        required_libs.extend(build_option('required_linked_shared_libs') or [])
         required_libs.extend(self.toolchain.required_linked_shared_libs())
         required_libs.extend(self.required_linked_shared_libs())
         required_libs.extend(self.cfg['required_linked_shared_libs'])
@@ -3399,6 +3441,34 @@ class EasyBlock(object):
             self.sanity_check_fail_msgs.append(overall_fail_msg + ', '.join(x[0] for x in failed_exts))
             self.sanity_check_fail_msgs.extend(x[1] for x in failed_exts)
 
+    def sanity_check_load_module(self, extension=False, extra_modules=None):
+        """
+        Load module to prepare environment for sanity check
+        """
+
+        # skip loading of fake module when using --sanity-check-only, load real module instead
+        if build_option('sanity_check_only') and not extension:
+            self.log.info("Loading real module for %s %s: %s", self.name, self.version, self.short_mod_name)
+            self.load_module(extra_modules=extra_modules)
+            self.sanity_check_module_loaded = True
+
+        # only load fake module for non-extensions, and not during dry run
+        elif not (extension or self.dry_run):
+
+            if extra_modules:
+                self.log.info("Loading extra modules for sanity check: %s", ', '.join(extra_modules))
+
+            try:
+                # unload all loaded modules before loading fake module
+                # this ensures that loading of dependencies is tested, and avoids conflicts with build dependencies
+                self.fake_mod_data = self.load_fake_module(purge=True, extra_modules=extra_modules, verbose=True)
+                self.sanity_check_module_loaded = True
+            except EasyBuildError as err:
+                self.sanity_check_fail_msgs.append("loading fake module failed: %s" % err)
+                self.log.warning("Sanity check: %s" % self.sanity_check_fail_msgs[-1])
+
+        return self.fake_mod_data
+
     def _sanity_check_step(self, custom_paths=None, custom_commands=None, extension=False, extra_modules=None):
         """
         Real version of sanity_check_step method.
@@ -3463,24 +3533,8 @@ class EasyBlock(object):
 
                 trace_msg("%s %s found: %s" % (typ, xs2str(xs), ('FAILED', 'OK')[found]))
 
-        fake_mod_data = None
-
-        # skip loading of fake module when using --sanity-check-only, load real module instead
-        if build_option('sanity_check_only') and not extension:
-            self.load_module(extra_modules=extra_modules)
-
-        # only load fake module for non-extensions, and not during dry run
-        elif not (extension or self.dry_run):
-            try:
-                # unload all loaded modules before loading fake module
-                # this ensures that loading of dependencies is tested, and avoids conflicts with build dependencies
-                fake_mod_data = self.load_fake_module(purge=True, extra_modules=extra_modules, verbose=True)
-            except EasyBuildError as err:
-                self.sanity_check_fail_msgs.append("loading fake module failed: %s" % err)
-                self.log.warning("Sanity check: %s" % self.sanity_check_fail_msgs[-1])
-
-            if extra_modules:
-                self.log.info("Loading extra modules for sanity check: %s", ', '.join(extra_modules))
+        if not self.sanity_check_module_loaded:
+            self.fake_mod_data = self.sanity_check_load_module(extension=extension, extra_modules=extra_modules)
 
         # allow oversubscription of P processes on C cores (P>C) for software installed on top of Open MPI;
         # this is useful to avoid failing of sanity check commands that involve MPI
@@ -3516,8 +3570,10 @@ class EasyBlock(object):
             self.sanity_check_fail_msgs.append(linked_shared_lib_fails)
 
         # cleanup
-        if fake_mod_data:
-            self.clean_up_fake_module(fake_mod_data)
+        if self.fake_mod_data:
+            self.clean_up_fake_module(self.fake_mod_data)
+            self.sanity_check_module_loaded = False
+            self.fake_mod_data = None
 
         if self.toolchain.use_rpath:
             rpath_fails = self.sanity_check_rpath()
@@ -4355,7 +4411,7 @@ def reproduce_build(app, reprod_dir_root):
     :param app: easyblock class instance
     :param reprod_dir_root: root directory in which to create the 'reprod' directory
 
-    :return reprod_dir: directory containing reproducibility files
+    :return: reprod_dir directory containing reproducibility files
     """
 
     ec_filename = app.cfg.filename()
@@ -4385,7 +4441,7 @@ def reproduce_build(app, reprod_dir_root):
 def get_easyblock_instance(ecdict):
     """
     Get an instance for this easyconfig
-    :param easyconfig: parsed easyconfig (EasyConfig instance)
+    :param ecdict: parsed easyconfig (EasyConfig instance)
 
     returns an instance of EasyBlock (or subclass thereof)
     """
