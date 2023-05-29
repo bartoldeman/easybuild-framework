@@ -502,6 +502,12 @@ class ModuleGenerator(object):
         """
         raise NotImplementedError
 
+    def msg_on_unload(self, msg):
+        """
+        Add a message that should be printed when unloading the module.
+        """
+        raise NotImplementedError
+
     def set_alias(self, key, value):
         """
         Generate set-alias statement in modulefile for the given key/value pair.
@@ -606,28 +612,17 @@ class ModuleGenerator(object):
 
     def _generate_extension_list(self):
         """
-        Generate a string with a comma-separated list of extensions.
-        """
-        # We need only name and version, so don't resolve templates
-        exts_list = self.app.cfg.get_ref('exts_list')
-        extensions = ', '.join(sorted(['-'.join(ext[:2]) for ext in exts_list], key=str.lower))
+        Generate a string with a list of extensions.
 
-        return extensions
+        The name and version are separated by name_version_sep and each extension is separated by ext_sep
+        """
+        return self.app.make_extension_string()
 
     def _generate_extensions_list(self):
         """
         Generate a list of all extensions in name/version format
         """
-        exts_list = self.app.cfg['exts_list']
-        # the format is extension_name/extension_version
-        exts_ver_list = []
-        for ext in exts_list:
-            if isinstance(ext, tuple):
-                exts_ver_list.append('%s/%s' % (ext[0], ext[1]))
-            elif isinstance(ext, string_type):
-                exts_ver_list.append(ext)
-
-        return sorted(exts_ver_list, key=str.lower)
+        return self.app.make_extension_string(name_version_sep='/', ext_sep=',').split(',')
 
     def _generate_help_text(self):
         """
@@ -950,6 +945,15 @@ class ModuleGeneratorTcl(ModuleGenerator):
         msg = re.sub(r'((?<!\\)[%s])' % ''.join(self.CHARS_TO_ESCAPE), r'\\\1', msg)
         print_cmd = "puts stderr %s" % quote_str(msg, tcl=True)
         return '\n'.join(['', self.conditional_statement("module-info mode load", print_cmd, indent=False)])
+
+    def msg_on_unload(self, msg):
+        """
+        Add a message that should be printed when unloading the module.
+        """
+        # escape any (non-escaped) characters with special meaning by prefixing them with a backslash
+        msg = re.sub(r'((?<!\\)[%s])' % ''.join(self.CHARS_TO_ESCAPE), r'\\\1', msg)
+        print_cmd = "puts stderr %s" % quote_str(msg, tcl=True)
+        return '\n'.join(['', self.conditional_statement("module-info mode unload", print_cmd, indent=False)])
 
     def update_paths(self, key, paths, prepend=True, allow_abs=False, expand_relpaths=True):
         """
@@ -1385,6 +1389,14 @@ class ModuleGeneratorLua(ModuleGenerator):
         # take into account possible newlines in messages by using [==...==] (requires Lmod 5.8)
         stmt = 'io.stderr:write(%s%s%s)' % (self.START_STR, self.check_str(msg), self.END_STR)
         return '\n' + self.conditional_statement('mode() == "load"', stmt, indent=False)
+
+    def msg_on_unload(self, msg):
+        """
+        Add a message that should be printed when loading the module.
+        """
+        # take into account possible newlines in messages by using [==...==] (requires Lmod 5.8)
+        stmt = 'io.stderr:write(%s%s%s)' % (self.START_STR, self.check_str(msg), self.END_STR)
+        return '\n' + self.conditional_statement('mode() == "unload"', stmt, indent=False)
 
     def modulerc(self, module_version=None, filepath=None, modulerc_txt=None):
         """

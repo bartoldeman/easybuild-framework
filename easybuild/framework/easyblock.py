@@ -84,9 +84,9 @@ from easybuild.tools.filetools import find_backup_name_candidate, get_source_tar
 from easybuild.tools.filetools import is_binary, is_sha256_checksum, mkdir, move_file, move_logs, read_file, remove_dir
 from easybuild.tools.filetools import remove_file, remove_lock, verify_checksum, weld_paths, write_file, symlink
 from easybuild.tools.hooks import BUILD_STEP, CLEANUP_STEP, CONFIGURE_STEP, EXTENSIONS_STEP, FETCH_STEP, INSTALL_STEP
-from easybuild.tools.hooks import MODULE_STEP, PACKAGE_STEP, PATCH_STEP, PERMISSIONS_STEP, POSTITER_STEP, POSTPROC_STEP
-from easybuild.tools.hooks import PREPARE_STEP, READY_STEP, SANITYCHECK_STEP, SOURCE_STEP, TEST_STEP, TESTCASES_STEP
-from easybuild.tools.hooks import MODULE_WRITE, load_hooks, run_hook
+from easybuild.tools.hooks import MODULE_STEP, MODULE_WRITE, PACKAGE_STEP, PATCH_STEP, PERMISSIONS_STEP, POSTITER_STEP
+from easybuild.tools.hooks import POSTPROC_STEP, PREPARE_STEP, READY_STEP, SANITYCHECK_STEP, SOURCE_STEP
+from easybuild.tools.hooks import SINGLE_EXTENSION, TEST_STEP, TESTCASES_STEP, load_hooks, run_hook
 from easybuild.tools.run import check_async_cmd, run_cmd
 from easybuild.tools.jenkins import write_to_xml
 from easybuild.tools.module_generator import ModuleGeneratorLua, ModuleGeneratorTcl, module_generator, dependencies_for
@@ -100,7 +100,7 @@ from easybuild.tools.package.utilities import package
 from easybuild.tools.py2vs3 import extract_method_name, string_type
 from easybuild.tools.repository.repository import init_repository
 from easybuild.tools.systemtools import check_linked_shared_libs, det_parallelism, get_linked_libs_raw
-from easybuild.tools.systemtools import get_shared_lib_ext, use_group
+from easybuild.tools.systemtools import get_shared_lib_ext, pick_system_specific_value, use_group
 from easybuild.tools.utilities import INDENT_4SPACES, get_class_for, nub, quote_str
 from easybuild.tools.utilities import remove_unwanted_chars, time2str, trace_msg
 from easybuild.tools.version import this_is_easybuild, VERBOSE_VERSION, VERSION
@@ -1415,6 +1415,13 @@ class EasyBlock(object):
                 modloadmsg += '\n'
             lines.append(self.module_generator.msg_on_load(modloadmsg))
 
+        modunloadmsg = self.cfg['modunloadmsg']
+        if modunloadmsg:
+            # add trailing newline to prevent that shell prompt is 'glued' to module unload/purge message
+            if not modunloadmsg.endswith('\n'):
+                modunloadmsg += '\n'
+            lines.append(self.module_generator.msg_on_unload(modunloadmsg))
+
         for (key, value) in self.cfg['modaliases'].items():
             lines.append(self.module_generator.set_alias(key, value))
 
@@ -1432,7 +1439,7 @@ class EasyBlock(object):
 
         # set environment variable that specifies list of extensions
         # We need only name and version, so don't resolve templates
-        exts_list = ','.join(['-'.join(ext[:2]) for ext in self.cfg.get_ref('exts_list')])
+        exts_list = self.make_extension_string(ext_sep=',', sort=False)
         env_var_name = convert_name(self.name, upper=True)
         lines.append(self.module_generator.set_environment('EBEXTSLIST%s' % env_var_name, exts_list))
 
@@ -1562,8 +1569,8 @@ class EasyBlock(object):
                 paths = sum((glob.glob(path) if path else [path] for path in reqs), [])  # sum flattens to list
 
                 # If lib64 is just a symlink to lib we fixup the paths to avoid duplicates
-                lib64_is_symlink = (all(os.path.isdir(path) for path in ['lib', 'lib64'])
-                                    and os.path.samefile('lib', 'lib64'))
+                lib64_is_symlink = (all(os.path.isdir(path) for path in ['lib', 'lib64']) and
+                                    os.path.samefile('lib', 'lib64'))
                 if lib64_is_symlink:
                     fixed_paths = []
                     for path in paths:
@@ -1713,6 +1720,27 @@ class EasyBlock(object):
     # EXTENSIONS UTILITY FUNCTIONS
     #
 
+    def _make_extension_list(self):
+        """
+        Return a list of extension names and their versions included in this installation
+
+        Each entry should be a (name, version) tuple or just (name, ) if no version exists
+        """
+        # We need only name and version, so don't resolve templates
+        # Each extension in exts_list is either a string or a list/tuple with name, version as first entries
+        return [(ext, ) if isinstance(ext, string_type) else ext[:2] for ext in self.cfg.get_ref('exts_list')]
+
+    def make_extension_string(self, name_version_sep='-', ext_sep=', ', sort=True):
+        """
+        Generate a string with a list of extensions.
+
+        The name and version are separated by name_version_sep and each extension is separated by ext_sep
+        """
+        exts_list = (name_version_sep.join(ext) for ext in self._make_extension_list())
+        if sort:
+            exts_list = sorted(exts_list, key=str.lower)
+        return ext_sep.join(exts_list)
+
     def prepare_for_extensions(self):
         """
         Also do this before (eg to set the template)
@@ -1854,6 +1882,8 @@ class EasyBlock(object):
 
             self.log.info("Starting extension %s", ext.name)
 
+            run_hook(SINGLE_EXTENSION, self.hooks, pre_step_hook=True, args=[ext])
+
             # always go back to original work dir to avoid running stuff from a dir that no longer exists
             change_dir(self.orig_workdir)
 
@@ -1899,6 +1929,8 @@ class EasyBlock(object):
                             print_msg("\t... (took < 1 sec)", log=self.log, silent=self.silent)
 
             self.update_exts_progress_bar(progress_info, progress_size=1)
+
+            run_hook(SINGLE_EXTENSION, self.hooks, post_step_hook=True, args=[ext])
 
     def install_extensions_parallel(self, install=True):
         """
@@ -2421,6 +2453,11 @@ class EasyBlock(object):
         sources = ent.get('sources', [])
         patches = ent.get('patches', [])
         checksums = ent.get('checksums', [])
+        # Single source should be re-wrapped as a list, and checksums with it
+        if isinstance(sources, dict):
+            sources = [sources]
+        if isinstance(checksums, string_type):
+            checksums = [checksums]
 
         if not checksums:
             checksums_from_json = self.get_checksums_from_json()
@@ -2905,6 +2942,10 @@ class EasyBlock(object):
                     for path in paths:
                         # check whether file should be patched by checking whether it has a shebang we want to tweak;
                         # this also helps to skip binary files we may be hitting (but only with Python 3)
+                        if os.path.isdir(path):
+                            self.log.debug("Skipping shebang fix for directory '%s'", path)
+                            continue
+
                         try:
                             contents = read_file(path, mode='r')
                             should_patch = shebang_regex.match(contents)
@@ -3049,7 +3090,7 @@ class EasyBlock(object):
         self.cfg['builddependencies'] = builddeps
         self.cfg.iterating = False
 
-    def sanity_check_rpath(self, rpath_dirs=None):
+    def sanity_check_rpath(self, rpath_dirs=None, check_readelf_rpath=True):
         """Sanity check binaries/libraries w.r.t. RPATH linking."""
 
         self.log.info("Checking RPATH linkage for binaries/libraries...")
@@ -3114,17 +3155,21 @@ class EasyBlock(object):
                             self.log.debug("Output of 'ldd %s' checked, looks OK", path)
 
                         # check whether RPATH section in 'readelf -d' output is there
-                        out, ec = run_cmd("readelf -d %s" % path, simple=False, trace=False)
-                        if ec:
-                            fail_msg = "Failed to run 'readelf %s': %s" % (path, out)
-                            self.log.warning(fail_msg)
-                            fails.append(fail_msg)
-                        elif not readelf_rpath_regex.search(out):
-                            fail_msg = "No '(RPATH)' found in 'readelf -d' output for %s: %s" % (path, out)
-                            self.log.warning(fail_msg)
-                            fails.append(fail_msg)
+                        if check_readelf_rpath:
+                            fail_msg = None
+                            out, ec = run_cmd("readelf -d %s" % path, simple=False, trace=False)
+                            if ec:
+                                fail_msg = "Failed to run 'readelf %s': %s" % (path, out)
+                            elif not readelf_rpath_regex.search(out):
+                                fail_msg = "No '(RPATH)' found in 'readelf -d' output for %s: %s" % (path, out)
+
+                            if fail_msg:
+                                self.log.warning(fail_msg)
+                                fails.append(fail_msg)
+                            else:
+                                self.log.debug("Output of 'readelf -d %s' checked, looks OK", path)
                         else:
-                            self.log.debug("Output of 'readelf -d %s' checked, looks OK", path)
+                            self.log.debug("Skipping the RPATH section check with 'readelf -d', as requested")
             else:
                 self.log.debug("Not sanity checking files in non-existing directory %s", dirpath)
 
@@ -3320,6 +3365,15 @@ class EasyBlock(object):
             error_msg = "Incorrect format for sanity_check_paths: should (only) have %s keys, "
             error_msg += "values should be lists (at least one non-empty)."
             raise EasyBuildError(error_msg % ', '.join("'%s'" % k for k in known_keys))
+
+        # Resolve arch specific entries
+        for values in paths.values():
+            new_values = []
+            for value in values:
+                value = pick_system_specific_value('sanity_check_paths', value, allow_none=True)
+                if value is not None:
+                    new_values.append(value)
+            values[:] = new_values
 
         # if enhance_sanity_check is not enabled, only sanity_check_commands specified in the easyconfig file are used,
         # the ones provided by the easyblock (via custom_commands) are ignored
