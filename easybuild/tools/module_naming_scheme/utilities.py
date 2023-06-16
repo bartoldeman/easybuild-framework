@@ -69,8 +69,8 @@ def det_full_ec_version(ec):
                              type(versionprefix).__name__, versionprefix, ec)
 
     versionsuffix = ec.get('versionsuffix', '')
-    if not isinstance(versionsuffix, string_type):
-        raise EasyBuildError("versionsuffix value should be a string, found '%s': %s (full spec: %s)",
+    if not isinstance(versionsuffix, string_type) and versionsuffix is not None:
+        raise EasyBuildError("versionsuffix value should be a string or None, found '%s': %s (full spec: %s)",
                              type(versionsuffix).__name__, versionsuffix, ec)
 
     ecver = ''.join([x for x in [versionprefix, ecver, versionsuffix] if x])
