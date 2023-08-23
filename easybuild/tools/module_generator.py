@@ -514,6 +514,12 @@ class ModuleGenerator(object):
         """
         raise NotImplementedError
 
+    def set_shell_function(self, key, bashStr, cshStr):
+        """
+        Generate set_shell_function statement in modulefile for the given key/value pair.
+        """
+        raise NotImplementedError
+
     def set_as_default(self, module_dir_path, module_version, mod_symlink_paths=None):
         """
         Set generated module as default module
@@ -1005,6 +1011,12 @@ class ModuleGeneratorTcl(ModuleGenerator):
         # quotes are needed, to ensure smooth working of EBDEVEL* modulefiles
         return 'set-alias\t%s\t\t%s\n' % (key, quote_str(value, tcl=True))
 
+    def set_shell_function(self, key, bashStr, cshStr):
+        """
+        Generate set_shell_function statement in modulefile for the given key/value pair.
+        """
+        raise NotImplementedError
+
     def set_as_default(self, module_dir_path, module_version, mod_symlink_paths=None):
         """
         Create a .version file inside the package module folder in order to set the default version for TMod
@@ -1479,6 +1491,13 @@ class ModuleGeneratorLua(ModuleGenerator):
         """
         # quotes are needed, to ensure smooth working of EBDEVEL* modulefiles
         return 'set_alias("%s", %s)\n' % (key, quote_str(value))
+
+    def set_shell_function(self, key, bashStr, cshStr):
+        """
+        Generate set_shell_function statement in modulefile for the given key/value pair.
+        """
+        # quotes are needed, to ensure smooth working of EBDEVEL* modulefiles
+        return 'set_shell_function("%s", %s, %s)\n' % (key, quote_str(bashStr), quote_str(cshStr))
 
     def set_as_default(self, module_dir_path, module_version, mod_symlink_paths=None):
         """
